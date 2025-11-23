@@ -1,1 +1,16 @@
-
+{
+  "name": "Good Health",
+  "short_name": "GoodHealth",
+  "description": "แอพบันทึกสุขภาพ by เจตนิพัทธ์",
+  "start_url": "/good-health-app/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#4F46E5",
+  "icons": [
+    {
+      "src": "https://em-content.zobj.net/source/twitter/53/red-heart_2764.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    }
+  ]
+}
