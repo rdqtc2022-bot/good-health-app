@@ -1,1 +1,1594 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Good Health - แอพบันทึกสุขภาพ</title>
+  <meta name="description" content="แอพบันทึกสุขภาพครบวงจร by เจตนิพัทธ์">
+  <meta name="author" content="เจตนิพัทธ์">
+  
+  <!-- Favicon -->
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>❤️</text></svg>">
+  
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    @keyframes heartbeat {
+      0%, 100% { transform: scale(1); }
+      25% { transform: scale(1.1); }
+      50% { transform: scale(1); }
+    }
+    @keyframes float {
+      0%, 100% { transform: translateY(0px) rotate(0deg); }
+      50% { transform: translateY(-20px) rotate(5deg); }
+    }
+    .animate-heartbeat {
+      animation: heartbeat 1.5s ease-in-out infinite;
+    }
+    .animate-float {
+      animation: float 4s ease-in-out infinite;
+    }
+    .loading {
+      display: inline-block;
+      width: 20px;
+      height: 20px;
+      border: 3px solid rgba(255,255,255,.3);
+      border-radius: 50%;
+      border-top-color: #fff;
+      animation: spin 1s ease-in-out infinite;
+    }
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+  </style>
+</head>
+<body>
+  <div id="app"></div>
 
+  <script>
+    // ========== Configuration ==========
+    const CONFIG = {
+      // URL ของ Google Apps Script API
+      API_URL: 'YOUR_GOOGLE_SCRIPT_URL_HERE', // ⚠️ ต้องเปลี่ยนตรงนี้!
+      USE_LOCAL_STORAGE: true // ใช้ localStorage แทนถ้าไม่มี Backend
+    };
+
+    // ========== Local Storage Helper (สำหรับ GitHub Pages) ==========
+    const LocalDB = {
+      save: (key, data) => {
+        localStorage.setItem(key, JSON.stringify(data));
+      },
+      get: (key) => {
+        const data = localStorage.getItem(key);
+        return data ? JSON.parse(data) : null;
+      },
+      remove: (key) => {
+        localStorage.removeItem(key);
+      }
+    };
+
+    // ========== State Management ==========
+    let state = {
+      isLoggedIn: false,
+      currentUser: null,
+      isAdmin: false,
+      isRegistering: false,
+      loginForm: { username: '', password: '' },
+      registerForm: { username: '', password: '', confirmPassword: '' },
+      loginError: '',
+      activeTab: 'workout',
+      workouts: [],
+      steps: [],
+      meals: [],
+      bloodPressure: [],
+      adminFilter: 'all',
+      
+      workoutForm: { type: '', duration: '', date: new Date().toISOString().split('T')[0] },
+      isTimerMode: false,
+      isTimerRunning: false,
+      timerSeconds: 0,
+      timerInterval: null,
+      
+      stepsForm: { steps: '', distance: '', date: new Date().toISOString().split('T')[0] },
+      isAutoTrackMode: false,
+      
+      mealForm: { mealType: '', food: '', date: new Date().toISOString().split('T')[0] },
+      
+      bpForm: { systolic: '', diastolic: '', date: new Date().toISOString().split('T')[0] },
+      
+      notification: true,
+      loading: false
+    };
+
+    // ========== Helper Functions ==========
+    function setState(newState) {
+      state = { ...state, ...newState };
+      render();
+    }
+
+    function formatDate(dateStr) {
+      const date = new Date(dateStr);
+      return date.toLocaleDateString('th-TH', { 
+        year: 'numeric', 
+        month: 'long', 
+        day: 'numeric' 
+      });
+    }
+
+    function formatTime(seconds) {
+      const hrs = Math.floor(seconds / 3600);
+      const mins = Math.floor((seconds % 3600) / 60);
+      const secs = seconds % 60;
+      return `${hrs.toString().padStart(2, '0')}:${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+    }
+
+    function evaluateBloodPressure(systolic, diastolic) {
+      const sys = parseInt(systolic);
+      const dia = parseInt(diastolic);
+
+      if (sys < 120 && dia < 80) {
+        return { level: 'ปกติ', color: 'text-green-600', bg: 'bg-green-50', border: 'border-green-500' };
+      } else if (sys >= 120 && sys <= 129 && dia < 80) {
+        return { level: 'สูงกว่าปกติ', color: 'text-yellow-600', bg: 'bg-yellow-50', border: 'border-yellow-500' };
+      } else if ((sys >= 130 && sys <= 139) || (dia >= 80 && dia <= 89)) {
+        return { level: 'ความดันสูง ระดับ 1', color: 'text-orange-600', bg: 'bg-orange-50', border: 'border-orange-500' };
+      } else if (sys >= 140 || dia >= 90) {
+        return { level: 'ความดันสูง ระดับ 2', color: 'text-red-600', bg: 'bg-red-50', border: 'border-red-500' };
+      } else if (sys >= 180 || dia >= 120) {
+        return { level: 'วิกฤต! ควรพบแพทย์ทันที', color: 'text-red-800', bg: 'bg-red-100', border: 'border-red-700' };
+      }
+      return { level: 'ไม่สามารถประเมินได้', color: 'text-gray-600', bg: 'bg-gray-50', border: 'border-gray-500' };
+    }
+
+    // ========== Local Storage Functions (แทน Google Apps Script) ==========
+    function handleLogin() {
+      if (!state.loginForm.username || !state.loginForm.password) {
+        setState({ loginError: 'กรุณากรอกข้อมูลให้ครบถ้วน' });
+        return;
+      }
+
+      setState({ loading: true, loginError: '' });
+      
+      // จำลองการ login
+      setTimeout(() => {
+        const users = LocalDB.get('users') || [
+          { username: 'admin', password: 'admin123', isAdmin: true }
+        ];
+        
+        const user = users.find(u => 
+          u.username === state.loginForm.username && 
+          u.password === state.loginForm.password
+        );
+        
+        if (user) {
+          setState({
+            isLoggedIn: true,
+            currentUser: user.username,
+            isAdmin: user.isAdmin || false,
+            loginForm: { username: '', password: '' },
+            loading: false
+          });
+          loadUserData();
+        } else {
+          setState({ 
+            loginError: 'ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง', 
+            loading: false 
+          });
+        }
+      }, 500);
+    }
+
+    function handleRegister() {
+      if (!state.registerForm.username || !state.registerForm.password) {
+        setState({ loginError: 'กรุณากรอกข้อมูลให้ครบถ้วน' });
+        return;
+      }
+      
+      if (state.registerForm.password !== state.registerForm.confirmPassword) {
+        setState({ loginError: 'รหัสผ่านไม่ตรงกัน' });
+        return;
+      }
+
+      setState({ loading: true, loginError: '' });
+      
+      setTimeout(() => {
+        const users = LocalDB.get('users') || [
+          { username: 'admin', password: 'admin123', isAdmin: true }
+        ];
+        
+        if (users.find(u => u.username === state.registerForm.username)) {
+          setState({ 
+            loginError: 'ชื่อผู้ใช้นี้มีอยู่แล้ว', 
+            loading: false 
+          });
+          return;
+        }
+        
+        users.push({
+          username: state.registerForm.username,
+          password: state.registerForm.password,
+          isAdmin: false
+        });
+        
+        LocalDB.save('users', users);
+        
+        setState({
+          isLoggedIn: true,
+          currentUser: state.registerForm.username,
+          isAdmin: false,
+          registerForm: { username: '', password: '', confirmPassword: '' },
+          isRegistering: false,
+          loading: false
+        });
+        
+        loadUserData();
+      }, 500);
+    }
+
+    function handleLogout() {
+      saveUserData();
+      setState({
+        isLoggedIn: false,
+        currentUser: null,
+        isAdmin: false,
+        workouts: [],
+        steps: [],
+        meals: [],
+        bloodPressure: [],
+        adminFilter: 'all'
+      });
+    }
+
+    function loadUserData() {
+      if (!state.currentUser) return;
+      
+      const userData = LocalDB.get(`user_${state.currentUser}`) || {
+        workouts: [],
+        steps: [],
+        meals: [],
+        bloodPressure: []
+      };
+      
+      setState({
+        workouts: userData.workouts || [],
+        steps: userData.steps || [],
+        meals: userData.meals || [],
+        bloodPressure: userData.bloodPressure || []
+      });
+    }
+
+    function saveUserData() {
+      if (!state.currentUser) return;
+      
+      LocalDB.save(`user_${state.currentUser}`, {
+        workouts: state.workouts,
+        steps: state.steps,
+        meals: state.meals,
+        bloodPressure: state.bloodPressure
+      });
+    }
+
+    function loadAdminData() {
+      if (!state.isAdmin) return;
+      
+      const users = LocalDB.get('users') || [];
+      let allWorkouts = [];
+      let allSteps = [];
+      let allMeals = [];
+      let allBloodPressure = [];
+      
+      users.forEach(user => {
+        if (!user.isAdmin) {
+          const userData = LocalDB.get(`user_${user.username}`) || {};
+          allWorkouts = allWorkouts.concat((userData.workouts || []).map(w => ({...w, username: user.username})));
+          allSteps = allSteps.concat((userData.steps || []).map(s => ({...s, username: user.username})));
+          allMeals = allMeals.concat((userData.meals || []).map(m => ({...m, username: user.username})));
+          allBloodPressure = allBloodPressure.concat((userData.bloodPressure || []).map(bp => ({...bp, username: user.username})));
+        }
+      });
+      
+      setState({
+        workouts: allWorkouts,
+        steps: allSteps,
+        meals: allMeals,
+        bloodPressure: allBloodPressure
+      });
+    }
+
+    // ========== Workout Functions ==========
+    function addWorkout() {
+      const finalDuration = state.isTimerMode ? Math.floor(state.timerSeconds / 60) : parseInt(state.workoutForm.duration);
+      
+      if (!state.workoutForm.type || finalDuration <= 0) return;
+
+      const workout = {
+        id: Date.now(),
+        type: state.workoutForm.type,
+        duration: finalDuration,
+        date: state.workoutForm.date
+      };
+
+      const newWorkouts = [workout, ...state.workouts];
+      setState({
+        workouts: newWorkouts,
+        workoutForm: { type: '', duration: '', date: new Date().toISOString().split('T')[0] },
+        isTimerMode: false,
+        isTimerRunning: false,
+        timerSeconds: 0
+      });
+      
+      if (state.timerInterval) {
+        clearInterval(state.timerInterval);
+      }
+      
+      saveUserData();
+    }
+
+    function deleteWorkout(id) {
+      if (!confirm('ต้องการลบรายการนี้?')) return;
+      
+      setState({
+        workouts: state.workouts.filter(w => w.id != id)
+      });
+      saveUserData();
+    }
+
+    function startTimer() {
+      setState({ isTimerRunning: true });
+      const interval = setInterval(() => {
+        setState({ timerSeconds: state.timerSeconds + 1 });
+      }, 1000);
+      setState({ timerInterval: interval });
+    }
+
+    function stopTimer() {
+      setState({ isTimerRunning: false });
+      if (state.timerInterval) {
+        clearInterval(state.timerInterval);
+      }
+    }
+
+    function resetTimer() {
+      stopTimer();
+      setState({ timerSeconds: 0 });
+    }
+
+    function stopAndSave() {
+      stopTimer();
+      addWorkout();
+    }
+
+    // ========== Steps Functions ==========
+    function addSteps() {
+      if (!state.stepsForm.steps) return;
+
+      const step = {
+        id: Date.now(),
+        steps: parseInt(state.stepsForm.steps),
+        distance: parseFloat(state.stepsForm.distance) || 0,
+        date: state.stepsForm.date
+      };
+
+      setState({
+        steps: [step, ...state.steps],
+        stepsForm: { steps: '', distance: '', date: new Date().toISOString().split('T')[0] }
+      });
+      saveUserData();
+    }
+
+    function deleteSteps(id) {
+      if (!confirm('ต้องการลบรายการนี้?')) return;
+      
+      setState({
+        steps: state.steps.filter(s => s.id != id)
+      });
+      saveUserData();
+    }
+
+    // ========== Meal Functions ==========
+    function addMeal() {
+      if (!state.mealForm.mealType || !state.mealForm.food) return;
+
+      const meal = {
+        id: Date.now(),
+        mealType: state.mealForm.mealType,
+        food: state.mealForm.food,
+        date: state.mealForm.date
+      };
+
+      setState({
+        meals: [meal, ...state.meals],
+        mealForm: { mealType: '', food: '', date: new Date().toISOString().split('T')[0] }
+      });
+      saveUserData();
+    }
+
+    function deleteMeal(id) {
+      if (!confirm('ต้องการลบรายการนี้?')) return;
+      
+      setState({
+        meals: state.meals.filter(m => m.id != id)
+      });
+      saveUserData();
+    }
+
+    // ========== Blood Pressure Functions ==========
+    function addBloodPressure() {
+      if (!state.bpForm.systolic || !state.bpForm.diastolic) return;
+
+      const evaluation = evaluateBloodPressure(state.bpForm.systolic, state.bpForm.diastolic);
+      const bp = {
+        id: Date.now(),
+        systolic: parseInt(state.bpForm.systolic),
+        diastolic: parseInt(state.bpForm.diastolic),
+        date: state.bpForm.date,
+        evaluation: evaluation
+      };
+
+      setState({
+        bloodPressure: [bp, ...state.bloodPressure],
+        bpForm: { systolic: '', diastolic: '', date: new Date().toISOString().split('T')[0] }
+      });
+      saveUserData();
+    }
+
+    function deleteBloodPressure(id) {
+      if (!confirm('ต้องการลบรายการนี้?')) return;
+      
+      setState({
+        bloodPressure: state.bloodPressure.filter(bp => bp.id != id)
+      });
+      saveUserData();
+    }
+
+    // ========== Render Functions ==========
+    function render() {
+      const app = document.getElementById('app');
+      
+      if (!state.isLoggedIn) {
+        app.innerHTML = renderLoginPage();
+      } else {
+        app.innerHTML = renderMainApp();
+      }
+      
+      attachEventListeners();
+    }
+
+    function renderLoginPage() {
+      return `
+        <div class="min-h-screen bg-gradient-to-br from-blue-900 via-indigo-900 to-purple-900 flex items-center justify-center p-4 relative overflow-hidden">
+          <!-- Animated Background (ใช้ SVG Icons แทน Lucide) -->
+          <div class="absolute inset-0 overflow-hidden opacity-20">
+            <div class="absolute top-20 left-10 animate-bounce text-green-300 text-6xl">🏃</div>
+            <div class="absolute bottom-32 right-20 animate-pulse text-blue-300 text-5xl">💪</div>
+            <div class="absolute top-40 right-32 animate-heartbeat text-red-300 text-7xl">❤️</div>
+            <div class="absolute bottom-40 left-32 animate-pulse text-pink-300 text-6xl">👣</div>
+            <div class="absolute top-1/4 right-1/4 animate-pulse text-teal-300 text-6xl">🚶</div>
+            <div class="absolute bottom-20 right-40 animate-float text-yellow-300 text-6xl">🍎</div>
+          </div>
+
+          <div class="max-w-md w-full relative z-10">
+            <div class="text-center mb-8">
+              <div class="flex items-center justify-center gap-3 mb-4">
+                <div class="relative">
+                  <div class="text-7xl animate-heartbeat">❤️</div>
+                </div>
+              </div>
+              <h1 class="text-5xl font-bold text-white mb-2 drop-shadow-2xl">Good Health</h1>
+              <p class="text-pink-200 text-lg font-medium drop-shadow-lg">by เจตนิพัทธ์</p>
+              <p class="text-white/90 mt-3 drop-shadow-lg">ดูแลสุขภาพอย่างครบวงจร เพื่อชีวิตที่ดีกว่า</p>
+            </div>
+
+            <div class="bg-white/95 backdrop-blur-xl rounded-3xl shadow-2xl p-8 border border-white/30">
+              ${!state.isRegistering ? renderLoginForm() : renderRegisterForm()}
+            </div>
+
+            <div class="text-center mt-6">
+              <p class="text-white/70 text-sm drop-shadow-lg">© 2024 Good Health by เจตนิพัทธ์</p>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
+    function renderLoginForm() {
+      return `
+        <h2 class="text-2xl font-bold text-gray-800 mb-6 flex items-center gap-2">
+          <span class="text-2xl">🔐</span>
+          เข้าสู่ระบบ
+        </h2>
+        <div class="space-y-4">
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-2">ชื่อผู้ใช้</label>
+            <input
+              type="text"
+              id="loginUsername"
+              value="${state.loginForm.username}"
+              class="w-full px-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all"
+              placeholder="กรอกชื่อผู้ใช้"
+              ${state.loading ? 'disabled' : ''}
+            />
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-2">รหัสผ่าน</label>
+            <input
+              type="password"
+              id="loginPassword"
+              value="${state.loginForm.password}"
+              class="w-full px-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all"
+              placeholder="กรอกรหัสผ่าน"
+              ${state.loading ? 'disabled' : ''}
+            />
+          </div>
+          
+          ${state.loginError ? `
+            <div class="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-xl text-sm flex items-center gap-2">
+              <span class="text-red-500">⚠️</span>
+              ${state.loginError}
+            </div>
+          ` : ''}
+
+          <button
+            id="loginBtn"
+            class="w-full bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700 text-white font-medium py-3 rounded-xl transition-all transform hover:scale-[1.02] flex items-center justify-center gap-2 shadow-lg"
+            ${state.loading ? 'disabled' : ''}
+          >
+            ${state.loading ? '<div class="loading"></div>' : '🔐'} ${state.loading ? 'กำลังเข้าสู่ระบบ...' : 'เข้าสู่ระบบ'}
+          </button>
+
+          <div class="text-center mt-4">
+            <button id="showRegisterBtn" class="text-indigo-600 hover:text-indigo-700 text-sm font-medium hover:underline">
+              ยังไม่มีบัญชี? สมัครสมาชิก
+            </button>
+          </div>
+
+          <div class="mt-6 p-4 bg-gradient-to-r from-indigo-50 to-purple-50 rounded-xl border border-indigo-100">
+            <p class="text-xs text-gray-600 text-center mb-2 font-medium">🎯 ทดลองใช้งาน</p>
+            <p class="text-xs text-gray-500 text-center">Username: <span class="font-semibold text-indigo-600">admin</span> | Password: <span class="font-semibold text-indigo-600">admin123</span></p>
+          </div>
+        </div>
+      `;
+    }
+
+    function renderRegisterForm() {
+      return `
+        <h2 class="text-2xl font-bold text-gray-800 mb-6 flex items-center gap-2">
+          <span class="text-2xl">👤</span>
+          สมัครสมาชิก
+        </h2>
+        <div class="space-y-4">
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-2">ชื่อผู้ใช้</label>
+            <input
+              type="text"
+              id="registerUsername"
+              value="${state.registerForm.username}"
+              class="w-full px-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-green-500 focus:border-transparent transition-all"
+              placeholder="กรอกชื่อผู้ใช้"
+              ${state.loading ? 'disabled' : ''}
+            />
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-2">รหัสผ่าน</label>
+            <input
+              type="password"
+              id="registerPassword"
+              value="${state.registerForm.password}"
+              class="w-full px-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-green-500 focus:border-transparent transition-all"
+              placeholder="กรอกรหัสผ่าน"
+              ${state.loading ? 'disabled' : ''}
+            />
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-2">ยืนยันรหัสผ่าน</label>
+            <input
+              type="password"
+              id="registerConfirmPassword"
+              value="${state.registerForm.confirmPassword}"
+              class="w-full px-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-green-500 focus:border-transparent transition-all"
+              placeholder="กรอกรหัสผ่านอีกครั้ง"
+              ${state.loading ? 'disabled' : ''}
+            />
+          </div>
+          
+          ${state.loginError ? `
+            <div class="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-xl text-sm flex items-center gap-2">
+              <span class="text-red-500">⚠️</span>
+              ${state.loginError}
+            </div>
+          ` : ''}
+
+          <button
+            id="registerBtn"
+            class="w-full bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-700 hover:to-emerald-700 text-white font-medium py-3 rounded-xl transition-all transform hover:scale-[1.02] flex items-center justify-center gap-2 shadow-lg"
+            ${state.loading ? 'disabled' : ''}
+          >
+            ${state.loading ? '<div class="loading"></div>' : '👤'} ${state.loading ? 'กำลังสมัคร...' : 'สมัครสมาชิก'}
+          </button>
+
+          <div class="text-center mt-4">
+            <button id="showLoginBtn" class="text-indigo-600 hover:text-indigo-700 text-sm font-medium hover:underline">
+              มีบัญชีแล้ว? เข้าสู่ระบบ
+            </button>
+          </div>
+        </div>
+      `;
+    }
+
+    function renderMainApp() {
+      // ส่วนนี้จะยาวมาก ให้ฉันแบ่งเป็นส่วนๆ
+      return `
+        <div class="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-4 md:p-6">
+          <div class="max-w-6xl mx-auto">
+            ${renderHeader()}
+            ${renderTabs()}
+            ${renderContent()}
+          </div>
+        </div>
+      `;
+    }
+
+    function renderHeader() {
+      return `
+        <div class="text-center mb-6">
+          <div class="flex items-center justify-center gap-3 mb-2">
+            <div class="text-5xl">❤️</div>
+            <h1 class="text-3xl md:text-4xl font-bold text-gray-800">Good Health</h1>
+          </div>
+          <p class="text-sm text-gray-500 mb-1">by เจตนิพัทธ์</p>
+          <div class="flex items-center justify-center gap-3">
+            <p class="text-gray-600">ดูแลสุขภาพอย่างครบวงจร</p>
+            <div class="flex items-center gap-2 bg-white px-4 py-2 rounded-lg shadow-sm">
+              <span class="text-2xl">👤</span>
+              <span class="text-sm font-medium text-gray-700">${state.currentUser}</span>
+              <button id="logoutBtn" class="ml-2 text-red-500 hover:text-red-700 transition-colors text-xl" title="ออกจากระบบ">
+                🚪
+              </button>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
+    function renderTabs() {
+      const tabs = [
+        { id: 'workout', icon: '🏃', label: 'ออกกำลังกาย' },
+        { id: 'steps', icon: '👣', label: 'ก้าว/ระยะทาง' },
+        { id: 'meals', icon: '🍽️', label: 'อาหาร' },
+        { id: 'bp', icon: '❤️', label: 'ความดัน' },
+      ];
+
+      if (state.isAdmin) {
+        tabs.push({ id: 'admin', icon: '👥', label: 'จัดการ' });
+      }
+
+      return `
+        <div class="bg-white rounded-xl shadow-md p-2 mb-6">
+          <div class="grid gap-2" style="grid-template-columns: repeat(${tabs.length}, 1fr)">
+            ${tabs.map(tab => `
+              <button
+                class="tab-btn flex flex-col items-center gap-1 p-3 rounded-lg transition-colors ${
+                  state.activeTab === tab.id ? 'bg-indigo-600 text-white' : 'text-gray-600 hover:bg-gray-100'
+                }"
+                data-tab="${tab.id}"
+              >
+                <span class="text-2xl">${tab.icon}</span>
+                <span class="text-xs md:text-sm font-medium">${tab.label}</span>
+              </button>
+            `).join('')}
+          </div>
+        </div>
+      `;
+    }
+
+    function renderContent() {
+      switch (state.activeTab) {
+        case 'workout':
+          return renderWorkoutTab();
+        case 'steps':
+          return renderStepsTab();
+        case 'meals':
+          return renderMealsTab();
+        case 'bp':
+          return renderBloodPressureTab();
+        case 'admin':
+          return renderAdminTab();
+        default:
+          return '';
+      }
+    }
+    // ========== Workout Tab Renderer ==========
+    function renderWorkoutTab() {
+      const totalDuration = state.workouts.reduce((sum, w) => sum + w.duration, 0);
+      const totalWorkouts = state.workouts.length;
+
+      return `
+        <div class="space-y-6">
+          <!-- Stats Cards -->
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div class="bg-white rounded-xl shadow-md p-6 border-l-4 border-indigo-500">
+              <div class="flex items-center justify-between">
+                <div>
+                  <p class="text-gray-600 text-sm mb-1">จำนวนครั้งทั้งหมด</p>
+                  <p class="text-3xl font-bold text-gray-800">${totalWorkouts}</p>
+                </div>
+                <span class="text-5xl">🏃</span>
+              </div>
+            </div>
+            <div class="bg-white rounded-xl shadow-md p-6 border-l-4 border-green-500">
+              <div class="flex items-center justify-between">
+                <div>
+                  <p class="text-gray-600 text-sm mb-1">เวลารวม</p>
+                  <p class="text-3xl font-bold text-gray-800">${totalDuration} นาที</p>
+                </div>
+                <span class="text-5xl">⏱️</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Add Workout Form -->
+          <div class="bg-white rounded-xl shadow-lg p-6">
+            <h2 class="text-xl font-bold text-gray-800 mb-4 flex items-center gap-2">
+              <span class="text-2xl">➕</span>
+              บันทึกการออกกำลังกาย
+            </h2>
+            <div class="space-y-4">
+              <select id="workoutType" class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500">
+                <option value="">เลือกประเภท</option>
+                ${['วิ่ง', 'ปั่นจักรยาน', 'ว่ายน้ำ', 'โยคะ', 'เดินเร็ว', 'ยกน้ำหนัก', 'แอโรบิก', 'อื่นๆ'].map(type => `
+                  <option value="${type}" ${state.workoutForm.type === type ? 'selected' : ''}>${type}</option>
+                `).join('')}
+              </select>
+
+              <div class="flex gap-2">
+                <button id="manualModeBtn" class="flex-1 px-4 py-3 rounded-lg font-medium transition-colors ${!state.isTimerMode ? 'bg-indigo-600 text-white' : 'bg-gray-200 text-gray-700'}">
+                  กรอกเอง
+                </button>
+                <button id="timerModeBtn" class="flex-1 px-4 py-3 rounded-lg font-medium transition-colors ${state.isTimerMode ? 'bg-indigo-600 text-white' : 'bg-gray-200 text-gray-700'}">
+                  ⏱️ จับเวลา
+                </button>
+              </div>
+
+              ${state.isTimerMode ? `
+                <div class="bg-gradient-to-br from-indigo-50 to-blue-50 rounded-xl p-6 border-2 border-indigo-200">
+                  <div class="text-center">
+                    <div class="text-5xl font-bold text-indigo-600 mb-6 font-mono">${formatTime(state.timerSeconds)}</div>
+                    <div class="flex gap-3 justify-center flex-wrap">
+                      ${!state.isTimerRunning ? `
+                        <button id="startTimerBtn" class="flex items-center gap-2 px-6 py-3 bg-green-500 hover:bg-green-600 text-white font-medium rounded-lg">
+                          ▶️ ${state.timerSeconds > 0 ? 'ดำเนินการต่อ' : 'เริ่มจับเวลา'}
+                        </button>
+                        ${state.timerSeconds > 0 ? `
+                          <button id="stopAndSaveBtn" class="flex items-center gap-2 px-6 py-3 bg-blue-500 hover:bg-blue-600 text-white font-medium rounded-lg" ${!state.workoutForm.type ? 'disabled' : ''}>
+                            💾 บันทึกเลย
+                          </button>
+                        ` : ''}
+                      ` : `
+                        <button id="stopTimerBtn" class="flex items-center gap-2 px-6 py-3 bg-yellow-500 hover:bg-yellow-600 text-white font-medium rounded-lg">
+                          ⏸️ หยุดชั่วคราว
+                        </button>
+                      `}
+                      ${state.timerSeconds > 0 ? `
+                        <button id="resetTimerBtn" class="flex items-center gap-2 px-6 py-3 bg-gray-500 hover:bg-gray-600 text-white font-medium rounded-lg">
+                          🔄 รีเซ็ต
+                        </button>
+                      ` : ''}
+                    </div>
+                    ${state.timerSeconds > 0 ? `
+                      <p class="mt-4 text-sm text-gray-600">
+                        ระยะเวลา: <span class="font-semibold text-indigo-600">${Math.floor(state.timerSeconds / 60)} นาที ${state.timerSeconds % 60} วินาที</span>
+                      </p>
+                      ${!state.workoutForm.type ? '<p class="text-xs text-red-500 mt-2">⚠️ กรุณาเลือกประเภทการออกกำลังกายก่อนบันทึก</p>' : ''}
+                    ` : ''}
+                  </div>
+                </div>
+              ` : `
+                <input
+                  type="number"
+                  id="workoutDuration"
+                  value="${state.workoutForm.duration}"
+                  class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500"
+                  placeholder="ระยะเวลา (นาที)"
+                />
+              `}
+
+              <input
+                type="date"
+                id="workoutDate"
+                value="${state.workoutForm.date}"
+                class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500"
+              />
+
+              ${!state.isTimerMode ? `
+                <button id="addWorkoutBtn" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-medium py-3 rounded-lg">
+                  เพิ่มรายการ
+                </button>
+              ` : ''}
+            </div>
+          </div>
+
+          <!-- Workout List -->
+          <div class="bg-white rounded-xl shadow-lg p-6">
+            <h2 class="text-xl font-bold text-gray-800 mb-4">ประวัติการออกกำลังกาย</h2>
+            ${state.workouts.length === 0 ? `
+              <div class="text-center py-12">
+                <span class="text-6xl">🏃</span>
+                <p class="text-gray-500 mt-4">ยังไม่มีรายการบันทึก</p>
+                <p class="text-gray-400 text-sm">เริ่มบันทึกการออกกำลังกายของคุณเลย!</p>
+              </div>
+            ` : `
+              <div class="space-y-3">
+                ${state.workouts.map(w => `
+                  <div class="flex items-center justify-between p-4 bg-gray-50 rounded-lg hover:bg-gray-100">
+                    <div class="flex items-center gap-4">
+                      <div class="bg-indigo-100 p-3 rounded-lg">
+                        <span class="text-2xl">🏃</span>
+                      </div>
+                      <div>
+                        <h3 class="font-semibold text-gray-800">${w.type}</h3>
+                        <div class="flex items-center gap-4 text-sm text-gray-600 mt-1">
+                          <span>⏱️ ${w.duration} นาที</span>
+                          <span>📅 ${formatDate(w.date)}</span>
+                        </div>
+                      </div>
+                    </div>
+                    <button class="delete-workout-btn text-red-500 hover:text-red-700 hover:bg-red-50 p-2 rounded-lg" data-id="${w.id}">
+                      🗑️
+                    </button>
+                  </div>
+                `).join('')}
+              </div>
+            `}
+          </div>
+        </div>
+      `;
+    }
+
+    // ========== Steps Tab Renderer ==========
+    function renderStepsTab() {
+      const totalSteps = state.steps.reduce((sum, s) => sum + s.steps, 0);
+      const totalDistance = state.steps.reduce((sum, s) => sum + s.distance, 0);
+
+      return `
+        <div class="space-y-6">
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div class="bg-white rounded-xl shadow-md p-6 border-l-4 border-green-500">
+              <div class="flex items-center justify-between">
+                <div>
+                  <p class="text-gray-600 text-sm mb-1">ก้าวทั้งหมด</p>
+                  <p class="text-3xl font-bold text-gray-800">${totalSteps.toLocaleString()}</p>
+                </div>
+                <span class="text-5xl">👣</span>
+              </div>
+            </div>
+            <div class="bg-white rounded-xl shadow-md p-6 border-l-4 border-blue-500">
+              <div class="flex items-center justify-between">
+                <div>
+                  <p class="text-gray-600 text-sm mb-1">ระยะทางรวม</p>
+                  <p class="text-3xl font-bold text-gray-800">${totalDistance.toFixed(2)} กม.</p>
+                </div>
+                <span class="text-5xl">📍</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="bg-white rounded-xl shadow-lg p-6">
+            <h2 class="text-xl font-bold text-gray-800 mb-4 flex items-center gap-2">
+              <span class="text-2xl">➕</span>
+              บันทึกจำนวนก้าว
+            </h2>
+            <div class="space-y-4">
+              <div class="flex gap-2">
+                <button id="manualStepsModeBtn" class="flex-1 px-4 py-3 rounded-lg font-medium ${!state.isAutoTrackMode ? 'bg-indigo-600 text-white' : 'bg-gray-200 text-gray-700'}">
+                  กรอกเอง
+                </button>
+                <button id="autoTrackModeBtn" class="flex-1 px-4 py-3 rounded-lg font-medium ${state.isAutoTrackMode ? 'bg-indigo-600 text-white' : 'bg-gray-200 text-gray-700'}">
+                  🧭 ติดตามอัตโนมัติ
+                </button>
+              </div>
+
+              ${state.isAutoTrackMode ? `
+                <div class="bg-gradient-to-br from-green-50 to-emerald-50 rounded-xl p-6 border-2 border-green-200">
+                  <div class="text-center">
+                    <p class="text-amber-600 font-medium mb-4">⚠️ ฟีเจอร์ GPS ไม่รองรับใน Google Apps Script</p>
+                    <p class="text-sm text-gray-600">กรุณาใช้โหมด "กรอกเอง" แทนค่ะ</p>
+                  </div>
+                </div>
+              ` : `
+                <input
+                  type="number"
+                  id="stepsCount"
+                  value="${state.stepsForm.steps}"
+                  class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500"
+                  placeholder="จำนวนก้าว"
+                />
+                <input
+                  type="number"
+                  step="0.01"
+                  id="stepsDistance"
+                  value="${state.stepsForm.distance}"
+                  class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500"
+                  placeholder="ระยะทาง (กิโลเมตร)"
+                />
+              `}
+
+              <input
+                type="date"
+                id="stepsDate"
+                value="${state.stepsForm.date}"
+                class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500"
+              />
+
+              ${!state.isAutoTrackMode ? `
+                <button id="addStepsBtn" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-medium py-3 rounded-lg">
+                  เพิ่มรายการ
+                </button>
+              ` : ''}
+            </div>
+          </div>
+
+          <div class="bg-white rounded-xl shadow-lg p-6">
+            <h2 class="text-xl font-bold text-gray-800 mb-4">ประวัติการเดิน</h2>
+            ${state.steps.length === 0 ? `
+              <p class="text-center text-gray-500 py-8">ยังไม่มีรายการบันทึก</p>
+            ` : `
+              <div class="space-y-3">
+                ${state.steps.map(s => `
+                  <div class="flex items-center justify-between p-4 bg-gray-50 rounded-lg">
+                    <div>
+                      <h3 class="font-semibold text-gray-800">${s.steps.toLocaleString()} ก้าว</h3>
+                      <p class="text-sm text-gray-600">${s.distance} กม. • ${formatDate(s.date)}</p>
+                    </div>
+                    <button class="delete-steps-btn text-red-500 hover:bg-red-50 p-2 rounded-lg" data-id="${s.id}">
+                      🗑️
+                    </button>
+                  </div>
+                `).join('')}
+              </div>
+            `}
+          </div>
+        </div>
+      `;
+    }
+
+    // ========== Meals Tab Renderer ==========
+    function renderMealsTab() {
+      return `
+        <div class="space-y-6">
+          <div class="bg-white rounded-xl shadow-lg p-6">
+            <h2 class="text-xl font-bold text-gray-800 mb-4 flex items-center gap-2">
+              <span class="text-2xl">➕</span>
+              บันทึกมื้ออาหาร
+            </h2>
+            <div class="space-y-4">
+              <select id="mealType" class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500">
+                <option value="">เลือกมื้ออาหาร</option>
+                ${['เช้า', 'กลางวัน', 'เย็น', 'ว่าง'].map(type => `
+                  <option value="${type}" ${state.mealForm.mealType === type ? 'selected' : ''}>${type}</option>
+                `).join('')}
+              </select>
+              <textarea
+                id="mealFood"
+                class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500"
+                placeholder="บันทึกอาหารที่รับประทาน..."
+                rows="3"
+              >${state.mealForm.food}</textarea>
+              <input
+                type="date"
+                id="mealDate"
+                value="${state.mealForm.date}"
+                class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500"
+              />
+              <button id="addMealBtn" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-medium py-3 rounded-lg">
+                เพิ่มรายการ
+              </button>
+            </div>
+          </div>
+
+          <div class="bg-white rounded-xl shadow-lg p-6">
+            <h2 class="text-xl font-bold text-gray-800 mb-4">ประวัติการรับประทานอาหาร</h2>
+            ${state.meals.length === 0 ? `
+              <p class="text-center text-gray-500 py-8">ยังไม่มีรายการบันทึก</p>
+            ` : `
+              <div class="space-y-3">
+                ${state.meals.map(m => `
+                  <div class="flex items-center justify-between p-4 bg-gray-50 rounded-lg">
+                    <div class="flex-1">
+                      <div class="flex items-center gap-2 mb-1">
+                        <span class="px-2 py-1 bg-indigo-100 text-indigo-700 text-xs font-medium rounded">${m.mealType}</span>
+                        <span class="text-sm text-gray-600">${formatDate(m.date)}</span>
+                      </div>
+                      <p class="text-gray-800">${m.food}</p>
+                    </div>
+                    <button class="delete-meal-btn text-red-500 hover:bg-red-50 p-2 rounded-lg ml-2" data-id="${m.id}">
+                      🗑️
+                    </button>
+                  </div>
+                `).join('')}
+              </div>
+            `}
+          </div>
+        </div>
+      `;
+    }
+
+    // ========== Blood Pressure Tab Renderer ==========
+    function renderBloodPressureTab() {
+      return `
+        <div class="space-y-6">
+          <div class="bg-white rounded-xl shadow-lg p-6">
+            <h2 class="text-xl font-bold text-gray-800 mb-4 flex items-center gap-2">
+              <span class="text-2xl">➕</span>
+              บันทึกความดันโลหิต
+            </h2>
+            <div class="space-y-4">
+              <div class="grid grid-cols-2 gap-4">
+                <div>
+                  <label class="block text-sm font-medium text-gray-700 mb-2">ความดันตัวบน (Systolic)</label>
+                  <input
+                    type="number"
+                    id="bpSystolic"
+                    value="${state.bpForm.systolic}"
+                    class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500"
+                    placeholder="เช่น 120"
+                  />
+                </div>
+                <div>
+                  <label class="block text-sm font-medium text-gray-700 mb-2">ความดันตัวล่าง (Diastolic)</label>
+                  <input
+                    type="number"
+                    id="bpDiastolic"
+                    value="${state.bpForm.diastolic}"
+                    class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500"
+                    placeholder="เช่น 80"
+                  />
+                </div>
+              </div>
+              <input
+                type="date"
+                id="bpDate"
+                value="${state.bpForm.date}"
+                class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500"
+              />
+              <button id="addBpBtn" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-medium py-3 rounded-lg">
+                เพิ่มรายการ
+              </button>
+            </div>
+          </div>
+
+          <div class="bg-blue-50 border border-blue-200 rounded-xl p-4">
+            <h3 class="font-semibold text-blue-900 mb-2 flex items-center gap-2">
+              📊 เกณฑ์ความดันโลหิต
+            </h3>
+            <div class="space-y-1 text-sm">
+              <p class="text-green-700">✓ ปกติ: น้อยกว่า 120/80</p>
+              <p class="text-yellow-700">✓ สูงกว่าปกติ: 120-129/น้อยกว่า 80</p>
+              <p class="text-orange-700">✓ ความดันสูง ระดับ 1: 130-139/80-89</p>
+              <p class="text-red-700">✓ ความดันสูง ระดับ 2: 140 ขึ้นไป/90 ขึ้นไป</p>
+            </div>
+          </div>
+
+          <div class="bg-white rounded-xl shadow-lg p-6">
+            <h2 class="text-xl font-bold text-gray-800 mb-4">ประวัติความดันโลหิต</h2>
+            ${state.bloodPressure.length === 0 ? `
+              <p class="text-center text-gray-500 py-8">ยังไม่มีรายการบันทึก</p>
+            ` : `
+              <div class="space-y-3">
+                ${state.bloodPressure.map(bp => `
+                  <div class="p-4 rounded-lg border-l-4 ${bp.evaluation.bg} ${bp.evaluation.border}">
+                    <div class="flex items-center justify-between">
+                      <div class="flex-1">
+                        <div class="flex items-center gap-3 mb-2">
+                          <span class="text-2xl font-bold text-gray-800">${bp.systolic}/${bp.diastolic}</span>
+                          <span class="px-3 py-1 rounded-full text-sm font-medium ${bp.evaluation.color} bg-white">
+                            ${bp.evaluation.level}
+                          </span>
+                        </div>
+                        <p class="text-sm text-gray-600">${formatDate(bp.date)}</p>
+                      </div>
+                      <button class="delete-bp-btn text-red-500 hover:bg-red-50 p-2 rounded-lg" data-id="${bp.id}">
+                        🗑️
+                      </button>
+                    </div>
+                  </div>
+                `).join('')}
+              </div>
+            `}
+          </div>
+        </div>
+      `;
+    }
+
+    // ========== Admin Tab Renderer ==========
+    function renderAdminTab() {
+      if (!state.isAdmin) return '';
+
+      const filteredWorkouts = state.adminFilter === 'all' 
+        ? state.workouts 
+        : state.workouts.filter(w => w.username === state.adminFilter);
+      
+      const filteredSteps = state.adminFilter === 'all' 
+        ? state.steps 
+        : state.steps.filter(s => s.username === state.adminFilter);
+      
+      const filteredMeals = state.adminFilter === 'all' 
+        ? state.meals 
+        : state.meals.filter(m => m.username === state.adminFilter);
+      
+      const filteredBP = state.adminFilter === 'all' 
+        ? state.bloodPressure 
+        : state.bloodPressure.filter(bp => bp.username === state.adminFilter);
+
+      return `
+        <div class="space-y-6">
+          <!-- Filter -->
+          <div class="bg-white rounded-xl shadow-md p-6">
+            <div class="flex items-center gap-4">
+              <span class="text-2xl">🔍</span>
+              <div class="flex-1">
+                <label class="block text-sm font-medium text-gray-700 mb-2">กรองตามผู้ใช้</label>
+                <select id="adminFilterSelect" class="w-full md:w-64 px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500">
+                  <option value="all" ${state.adminFilter === 'all' ? 'selected' : ''}>ทั้งหมด</option>
+                  ${state.workouts.concat(state.steps, state.meals, state.bloodPressure)
+                    .map(item => item.username)
+                    .filter((v, i, a) => a.indexOf(v) === i)
+                    .map(username => `
+                      <option value="${username}" ${state.adminFilter === username ? 'selected' : ''}>${username}</option>
+                    `).join('')}
+                </select>
+              </div>
+              ${state.adminFilter !== 'all' ? `
+                <button id="clearFilterBtn" class="px-4 py-2 bg-gray-200 hover:bg-gray-300 text-gray-700 rounded-lg">
+                  ล้างตัวกรอง
+                </button>
+              ` : ''}
+            </div>
+          </div>
+
+          <!-- Stats -->
+          <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+            <div class="bg-white rounded-xl shadow-md p-6 border-l-4 border-indigo-500">
+              <p class="text-sm text-gray-600 mb-1">การออกกำลังกาย</p>
+              <p class="text-3xl font-bold text-gray-800">${filteredWorkouts.length}</p>
+            </div>
+            <div class="bg-white rounded-xl shadow-md p-6 border-l-4 border-green-500">
+              <p class="text-sm text-gray-600 mb-1">การเดิน/ก้าว</p>
+              <p class="text-3xl font-bold text-gray-800">${filteredSteps.length}</p>
+            </div>
+            <div class="bg-white rounded-xl shadow-md p-6 border-l-4 border-orange-500">
+              <p class="text-sm text-gray-600 mb-1">มื้ออาหาร</p>
+              <p class="text-3xl font-bold text-gray-800">${filteredMeals.length}</p>
+            </div>
+            <div class="bg-white rounded-xl shadow-md p-6 border-l-4 border-red-500">
+              <p class="text-sm text-gray-600 mb-1">บันทึกความดัน</p>
+              <p class="text-3xl font-bold text-gray-800">${filteredBP.length}</p>
+            </div>
+          </div>
+
+          <!-- Workouts Table -->
+          <div class="bg-white rounded-xl shadow-lg p-6">
+            <h2 class="text-xl font-bold text-gray-800 mb-4">การออกกำลังกาย</h2>
+            <div class="overflow-x-auto">
+              <table class="w-full">
+                <thead class="bg-gray-50">
+                  <tr>
+                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-600 uppercase">ผู้ใช้</th>
+                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-600 uppercase">ประเภท</th>
+                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-600 uppercase">ระยะเวลา</th>
+                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-600 uppercase">วันที่</th>
+                  </tr>
+                </thead>
+                <tbody class="divide-y divide-gray-200">
+                  ${filteredWorkouts.length === 0 ? `
+                    <tr><td colspan="4" class="px-4 py-8 text-center text-gray-500">ยังไม่มีข้อมูล</td></tr>
+                  ` : filteredWorkouts.map(w => `
+                    <tr class="hover:bg-gray-50">
+                      <td class="px-4 py-3">
+                        <div class="flex items-center gap-2">
+                          <span class="text-xl">👤</span>
+                          <span class="font-medium text-gray-800">${w.username}</span>
+                        </div>
+                      </td>
+                      <td class="px-4 py-3 text-gray-700">${w.type}</td>
+                      <td class="px-4 py-3 text-gray-700">${w.duration} นาที</td>
+                      <td class="px-4 py-3 text-gray-600 text-sm">${formatDate(w.date)}</td>
+                    </tr>
+                  `).join('')}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- Steps Table -->
+          <div class="bg-white rounded-xl shadow-lg p-6">
+            <h2 class="text-xl font-bold text-gray-800 mb-4">การเดิน/ก้าว</h2>
+            <div class="overflow-x-auto">
+              <table class="w-full">
+                <thead class="bg-gray-50">
+                  <tr>
+                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-600 uppercase">ผู้ใช้</th>
+                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-600 uppercase">จำนวนก้าว</th>
+                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-600 uppercase">ระยะทาง (กม.)</th>
+                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-600 uppercase">วันที่</th>
+                  </tr>
+                </thead>
+                <tbody class="divide-y divide-gray-200">
+                  ${filteredSteps.length === 0 ? `
+                    <tr><td colspan="4" class="px-4 py-8 text-center text-gray-500">ยังไม่มีข้อมูล</td></tr>
+                  ` : filteredSteps.map(s => `
+                    <tr class="hover:bg-gray-50">
+                      <td class="px-4 py-3">
+                        <div class="flex items-center gap-2">
+                          <span class="text-xl">👤</span>
+                          <span class="font-medium text-gray-800">${s.username}</span>
+                        </div>
+                      </td>
+                      <td class="px-4 py-3 text-gray-700">${s.steps.toLocaleString()}</td>
+                      <td class="px-4 py-3 text-gray-700">${s.distance.toFixed(2)}</td>
+                      <td class="px-4 py-3 text-gray-600 text-sm">${formatDate(s.date)}</td>
+                    </tr>
+                  `).join('')}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- Meals Table -->
+          <div class="bg-white rounded-xl shadow-lg p-6">
+            <h2 class="text-xl font-bold text-gray-800 mb-4">มื้ออาหาร</h2>
+            <div class="overflow-x-auto">
+              <table class="w-full">
+                <thead class="bg-gray-50">
+                  <tr>
+                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-600 uppercase">ผู้ใช้</th>
+                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-600 uppercase">มื้อ</th>
+                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-600 uppercase">อาหาร</th>
+                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-600 uppercase">วันที่</th>
+                  </tr>
+                </thead>
+                <tbody class="divide-y divide-gray-200">
+                  ${filteredMeals.length === 0 ? `
+                    <tr><td colspan="4" class="px-4 py-8 text-center text-gray-500">ยังไม่มีข้อมูล</td></tr>
+                  ` : filteredMeals.map(m => `
+                    <tr class="hover:bg-gray-50">
+                      <td class="px-4 py-3">
+                        <div class="flex items-center gap-2">
+                          <span class="text-xl">👤</span>
+                          <span class="font-medium text-gray-800">${m.username}</span>
+                        </div>
+                      </td>
+                      <td class="px-4 py-3">
+                        <span class="px-2 py-1 bg-orange-100 text-orange-700 text-xs font-medium rounded">${m.mealType}</span>
+                      </td>
+                      <td class="px-4 py-3 text-gray-700">${m.food}</td>
+                      <td class="px-4 py-3 text-gray-600 text-sm">${formatDate(m.date)}</td>
+                    </tr>
+                  `).join('')}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- Blood Pressure Table -->
+          <div class="bg-white rounded-xl shadow-lg p-6">
+            <h2 class="text-xl font-bold text-gray-800 mb-4">ความดันโลหิต</h2>
+            <div class="overflow-x-auto">
+              <table class="w-full">
+                <thead class="bg-gray-50">
+                  <tr>
+                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-600 uppercase">ผู้ใช้</th>
+                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-600 uppercase">ค่าความดัน</th>
+                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-600 uppercase">ระดับ</th>
+                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-600 uppercase">วันที่</th>
+                  </tr>
+                </thead>
+                <tbody class="divide-y divide-gray-200">
+                  ${filteredBP.length === 0 ? `
+                    <tr><td colspan="4" class="px-4 py-8 text-center text-gray-500">ยังไม่มีข้อมูล</td></tr>
+                  ` : filteredBP.map(bp => `
+                    <tr class="hover:bg-gray-50">
+                      <td class="px-4 py-3">
+                        <div class="flex items-center gap-2">
+                          <span class="text-xl">👤</span>
+                          <span class="font-medium text-gray-800">${bp.username}</span>
+                        </div>
+                      </td>
+                      <td class="px-4 py-3 text-gray-700 font-medium">${bp.systolic}/${bp.diastolic}</td>
+                      <td class="px-4 py-3">
+                        <span class="px-2 py-1 text-xs font-medium rounded ${bp.evaluation.bg} ${bp.evaluation.color}">
+                          ${bp.evaluation.level}
+                        </span>
+                      </td>
+                      <td class="px-4 py-3 text-gray-600 text-sm">${formatDate(bp.date)}</td>
+                    </tr>
+                  `).join('')}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
+    // ========== Event Listeners ==========
+    function attachEventListeners() {
+      // Login/Register Events
+      const loginBtn = document.getElementById('loginBtn');
+      const registerBtn = document.getElementById('registerBtn');
+      const showRegisterBtn = document.getElementById('showRegisterBtn');
+      const showLoginBtn = document.getElementById('showLoginBtn');
+      const logoutBtn = document.getElementById('logoutBtn');
+
+      if (loginBtn) {
+        loginBtn.addEventListener('click', handleLogin);
+      }
+      if (registerBtn) {
+        registerBtn.addEventListener('click', handleRegister);
+      }
+      if (showRegisterBtn) {
+        showRegisterBtn.addEventListener('click', () => {
+          setState({ isRegistering: true, loginError: '' });
+        });
+      }
+      if (showLoginBtn) {
+        showLoginBtn.addEventListener('click', () => {
+          setState({ isRegistering: false, loginError: '' });
+        });
+      }
+      if (logoutBtn) {
+        logoutBtn.addEventListener('click', handleLogout);
+      }
+
+      // Login form inputs
+      const loginUsername = document.getElementById('loginUsername');
+      const loginPassword = document.getElementById('loginPassword');
+      if (loginUsername) {
+        loginUsername.addEventListener('input', (e) => {
+          state.loginForm.username = e.target.value;
+        });
+        loginUsername.addEventListener('keypress', (e) => {
+          if (e.key === 'Enter') handleLogin();
+        });
+      }
+      if (loginPassword) {
+        loginPassword.addEventListener('input', (e) => {
+          state.loginForm.password = e.target.value;
+        });
+        loginPassword.addEventListener('keypress', (e) => {
+          if (e.key === 'Enter') handleLogin();
+        });
+      }
+
+      // Register form inputs
+      const registerUsername = document.getElementById('registerUsername');
+      const registerPassword = document.getElementById('registerPassword');
+      const registerConfirmPassword = document.getElementById('registerConfirmPassword');
+      if (registerUsername) {
+        registerUsername.addEventListener('input', (e) => {
+          state.registerForm.username = e.target.value;
+        });
+      }
+      if (registerPassword) {
+        registerPassword.addEventListener('input', (e) => {
+          state.registerForm.password = e.target.value;
+        });
+      }
+      if (registerConfirmPassword) {
+        registerConfirmPassword.addEventListener('input', (e) => {
+          state.registerForm.confirmPassword = e.target.value;
+        });
+      }
+
+      // Tab buttons
+      document.querySelectorAll('.tab-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+          const tab = e.currentTarget.getAttribute('data-tab');
+          setState({ activeTab: tab });
+          if (tab === 'admin' && state.isAdmin) {
+            loadAdminData();
+          }
+        });
+      });
+
+      // Workout Events
+      const workoutType = document.getElementById('workoutType');
+      const workoutDuration = document.getElementById('workoutDuration');
+      const workoutDate = document.getElementById('workoutDate');
+      const addWorkoutBtn = document.getElementById('addWorkoutBtn');
+      const manualModeBtn = document.getElementById('manualModeBtn');
+      const timerModeBtn = document.getElementById('timerModeBtn');
+      const startTimerBtn = document.getElementById('startTimerBtn');
+      const stopTimerBtn = document.getElementById('stopTimerBtn');
+      const resetTimerBtn = document.getElementById('resetTimerBtn');
+      const stopAndSaveBtn = document.getElementById('stopAndSaveBtn');
+
+      if (workoutType) {
+        workoutType.addEventListener('change', (e) => {
+          state.workoutForm.type = e.target.value;
+        });
+      }
+      if (workoutDuration) {
+        workoutDuration.addEventListener('input', (e) => {
+          state.workoutForm.duration = e.target.value;
+        });
+      }
+      if (workoutDate) {
+        workoutDate.addEventListener('change', (e) => {
+          state.workoutForm.date = e.target.value;
+        });
+      }
+      if (addWorkoutBtn) {
+        addWorkoutBtn.addEventListener('click', addWorkout);
+      }
+      if (manualModeBtn) {
+        manualModeBtn.addEventListener('click', () => {
+          setState({ isTimerMode: false, isTimerRunning: false, timerSeconds: 0 });
+          if (state.timerInterval) clearInterval(state.timerInterval);
+        });
+      }
+      if (timerModeBtn) {
+        timerModeBtn.addEventListener('click', () => {
+          setState({ isTimerMode: true });
+        });
+      }
+      if (startTimerBtn) {
+        startTimerBtn.addEventListener('click', startTimer);
+      }
+      if (stopTimerBtn) {
+        stopTimerBtn.addEventListener('click', stopTimer);
+      }
+      if (resetTimerBtn) {
+        resetTimerBtn.addEventListener('click', resetTimer);
+      }
+      if (stopAndSaveBtn) {
+        stopAndSaveBtn.addEventListener('click', stopAndSave);
+      }
+
+      // Delete workout buttons
+      document.querySelectorAll('.delete-workout-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+          const id = e.currentTarget.getAttribute('data-id');
+          deleteWorkout(id);
+        });
+      });
+
+      // Steps Events
+      const stepsCount = document.getElementById('stepsCount');
+      const stepsDistance = document.getElementById('stepsDistance');
+      const stepsDate = document.getElementById('stepsDate');
+      const addStepsBtn = document.getElementById('addStepsBtn');
+      const manualStepsModeBtn = document.getElementById('manualStepsModeBtn');
+      const autoTrackModeBtn = document.getElementById('autoTrackModeBtn');
+
+      if (stepsCount) {
+        stepsCount.addEventListener('input', (e) => {
+          state.stepsForm.steps = e.target.value;
+        });
+      }
+      if (stepsDistance) {
+        stepsDistance.addEventListener('input', (e) => {
+          state.stepsForm.distance = e.target.value;
+        });
+      }
+      if (stepsDate) {
+        stepsDate.addEventListener('change', (e) => {
+          state.stepsForm.date = e.target.value;
+        });
+      }
+      if (addStepsBtn) {
+        addStepsBtn.addEventListener('click', addSteps);
+      }
+      if (manualStepsModeBtn) {
+        manualStepsModeBtn.addEventListener('click', () => {
+          setState({ isAutoTrackMode: false });
+        });
+      }
+      if (autoTrackModeBtn) {
+        autoTrackModeBtn.addEventListener('click', () => {
+          setState({ isAutoTrackMode: true });
+        });
+      }
+
+      // Delete steps buttons
+      document.querySelectorAll('.delete-steps-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+          const id = e.currentTarget.getAttribute('data-id');
+          deleteSteps(id);
+        });
+      });
+
+      // Meals Events
+      const mealType = document.getElementById('mealType');
+      const mealFood = document.getElementById('mealFood');
+      const mealDate = document.getElementById('mealDate');
+      const addMealBtn = document.getElementById('addMealBtn');
+
+      if (mealType) {
+        mealType.addEventListener('change', (e) => {
+          state.mealForm.mealType = e.target.value;
+        });
+      }
+      if (mealFood) {
+        mealFood.addEventListener('input', (e) => {
+          state.mealForm.food = e.target.value;
+        });
+      }
+      if (mealDate) {
+        mealDate.addEventListener('change', (e) => {
+          state.mealForm.date = e.target.value;
+        });
+      }
+      if (addMealBtn) {
+        addMealBtn.addEventListener('click', addMeal);
+      }
+
+      // Delete meal buttons
+      document.querySelectorAll('.delete-meal-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+          const id = e.currentTarget.getAttribute('data-id');
+          deleteMeal(id);
+        });
+      });
+
+      // Blood Pressure Events
+      const bpSystolic = document.getElementById('bpSystolic');
+      const bpDiastolic = document.getElementById('bpDiastolic');
+      const bpDate = document.getElementById('bpDate');
+      const addBpBtn = document.getElementById('addBpBtn');
+
+      if (bpSystolic) {
+        bpSystolic.addEventListener('input', (e) => {
+          state.bpForm.systolic = e.target.value;
+        });
+      }
+      if (bpDiastolic) {
+        bpDiastolic.addEventListener('input', (e) => {
+          state.bpForm.diastolic = e.target.value;
+        });
+      }
+      if (bpDate) {
+        bpDate.addEventListener('change', (e) => {
+          state.bpForm.date = e.target.value;
+        });
+      }
+      if (addBpBtn) {
+        addBpBtn.addEventListener('click', addBloodPressure);
+      }
+
+      // Delete BP buttons
+      document.querySelectorAll('.delete-bp-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+          const id = e.currentTarget.getAttribute('data-id');
+          deleteBloodPressure(id);
+        });
+      });
+
+      // Admin Events
+      const adminFilterSelect = document.getElementById('adminFilterSelect');
+      const clearFilterBtn = document.getElementById('clearFilterBtn');
+
+      if (adminFilterSelect) {
+        adminFilterSelect.addEventListener('change', (e) => {
+          setState({ adminFilter: e.target.value });
+        });
+      }
+      if (clearFilterBtn) {
+        clearFilterBtn.addEventListener('click', () => {
+          setState({ adminFilter: 'all' });
+        });
+      }
+    }
+
+    // ========== Initialize App ==========
+    window.addEventListener('DOMContentLoaded', () => {
+      render();
+    });
+  </script>
+
+  <!-- Footer -->
+  <footer class="fixed bottom-0 left-0 right-0 bg-white/80 backdrop-blur-sm border-t border-gray-200 py-2">
+    <p class="text-center text-xs text-gray-500">
+      © 2024 Good Health - Developed with ❤️ by เจตนิพัทธ์
+    </p>
+  </footer>
+</body>
+</html>
